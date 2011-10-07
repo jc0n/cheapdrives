@@ -1,0 +1,175 @@
+#!/usr/bin/env python
+
+"""
+Quick and dirty feed parser for finding cheap hard drives
+on newegg.com, tigerdirect.com, etc.
+
+The listings are ordered by price/GB ratio.
+
+Requires: feedparser from www.feedparser.org
+
+Usage: ./cheapdrives <feed file> <feed links>
+"""
+
+__author__ = "John O'Connor"
+__version__ = 0.2
+
+import os
+import re
+import sys
+import time
+import webbrowser
+
+from itertools import groupby, imap
+from operator import attrgetter, itemgetter
+from tempfile import NamedTemporaryFile
+
+try:
+    import feedparser
+except ImportError:
+    raise SystemExit("""Please install the feedparser module from
+http://code.google.com/p/feedparser/""")
+
+
+class MissingFieldError(AttributeError):
+    """Raised when information is missing from a drive listing."""
+
+
+class InvalidDriveSize(Exception):
+    """Raised when the hard drive size is invalid."""
+
+
+class Drive:
+    """Represents one hard drive listing"""
+
+    _SIZE_EXPR = re.compile(r"\s+(\d+,?(?:\.\d+)?)\s*([TGM]B)", re.I)
+    _PRICE_EXPR = re.compile(r"\$(\d+(?:,\d+)?(?:\.\d+)?)", re.I)
+
+    def __init__(self, entry):
+        def to_ascii(s):
+            return s.encode("ascii", "ignore")
+        self.title = to_ascii(entry.title)
+        self.link = to_ascii(entry.link)
+        self.summary = to_ascii(entry.summary)
+        self._parse_title()
+
+    @property
+    def price_per_gb(self):
+        """Price per gigabyte ratio"""
+        return self.price / self.gb
+
+    @property
+    def gb_per_dollar(self):
+        """Gigabytes per dollar"""
+        return self.gb / self.price
+
+    def _parse_title(self):
+        try:
+            size, unit = self._SIZE_EXPR.findall(self.title)[0]
+        except IndexError:
+            raise MissingFieldError("Missing drive size.")
+
+        try:
+            price = self._PRICE_EXPR.findall(self.title)[0]
+        except IndexError:
+            raise MissingFieldError("Missing price or size.")
+
+        size = float(size.translate(None, ","))
+        self.price = float(price.translate(None, ","))
+
+        unit = unit.upper()
+        if unit == "GB":
+            self.gb = size
+        elif unit == "TB":
+            self.gb = size * 1000
+        elif unit == "MB":
+            self.gb = size / 1000
+        else:
+            raise InvalidDriveSize
+
+    def __cmp__(self, other):
+        return cmp(self.title, other.title)
+
+    def __str__(self):
+        return "(%0.02fxGB/$) %s" % (self.gb_per_dollar, self.title)
+
+
+class DriveList:
+    """Basic feed processor for hard drive"""
+
+    def __init__(self, feed_urls):
+        drives = []
+        for url in feed_urls:
+            feed = feedparser.parse(url)
+            for entry in feed.entries:
+                try:
+                    drive = Drive(entry)
+                except MissingFieldError:
+                    continue
+                drives.append(drive)
+        self.drives = drives
+
+    def __iter__(self):
+        return iter(self.drives)
+
+    def _uniq(self, seq):
+        return imap(next, imap(itemgetter(1), groupby(seq)))
+
+    def sorted_by_ppg(self):
+        return self._uniq(sorted(self, key=attrgetter("price_per_gb")))
+
+
+def parse_feed_args(args):
+    urls = []
+    for arg in map(str.strip, args):
+        if arg.startswith("http://"):
+            urls.append(arg)
+        elif not os.path.exists(arg):
+            raise ArgumentError("File %s not found." % arg)
+        else:
+            with open(arg, "r") as f:
+                urls.extend(map(str.strip, f))
+    return urls
+
+DRIVE_TEMPLATE = "<li><a href='{link}'>{title}</a><br /></li>\n"
+
+TEMPLATE = """
+<html>
+<head>
+    <style>
+        ol {
+            margin-top: 3px;
+        }
+        a, a:visited, a:active {
+            font-color: #333;
+            font-size: .8em;
+        }
+    </style>
+</head>
+<body>
+    <ol>%s</ol>
+</body>
+</html>
+"""
+
+def main(args):
+    if len(args) < 2:
+        print("Usage: %s [<feed file>] or [<feed URLs>]" %
+                os.path.basename(args[0]))
+        sys.exit(-1)
+
+    feed_urls = parse_feed_args(args[1:])
+    drive_list = DriveList(feed_urls)
+    items = [DRIVE_TEMPLATE.format(link=drive.link, title=drive.title)
+                for drive in drive_list.sorted_by_ppg()]
+    data = TEMPLATE % ''.join(items)
+
+    with NamedTemporaryFile('wb') as f:
+        f.write(data)
+        f.flush()
+        webbrowser.open('file://' + f.name)
+        time.sleep(6)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
