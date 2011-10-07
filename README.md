@@ -23,5 +23,5 @@ or manually specify one or more URLs on the command line
 
 ### Dependencies
 
-Python 2.5+
-Feedparser [http://code.google.com/p/feedparser/]
+- Python 2.5+ http://www.python.org
+- Feedparser http://code.google.com/p/feedparser
